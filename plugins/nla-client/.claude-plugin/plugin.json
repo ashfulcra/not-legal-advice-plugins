@@ -1,0 +1,10 @@
+{
+  "name": "nla-client",
+  "version": "0.2.0",
+  "description": "Client Agent toolkit for Not Legal Advice (simulated law firm on Fulcra): connect, share a Library, send nla/2 Requests, read status and the released deliverable. SIMULATED. NOT LEGAL ADVICE.",
+  "author": {
+    "name": "Not Legal Advice"
+  },
+  "repository": "https://github.com/ashfulcra/not-legal-advice-plugins",
+  "keywords": ["fulcra", "not-legal-advice", "nla", "client-agent"]
+}

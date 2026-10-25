@@ -1,0 +1,19 @@
+{
+  "name": "not-legal-advice",
+  "description": "Plugins for Not Legal Advice, a simulated agent-native law firm on Fulcra. SIMULATED. NOT LEGAL ADVICE.",
+  "owner": {
+    "name": "Ash Kalb"
+  },
+  "plugins": [
+    {
+      "name": "nla-client",
+      "source": "./plugins/nla-client",
+      "description": "For a Client Agent: connect to NLA, share a Library, send nla/2 Requests, read status and the released deliverable."
+    },
+    {
+      "name": "nla-reviewer",
+      "source": "./plugins/nla-reviewer",
+      "description": "For an NLA Initial Reviewer or Signing Attorney: review queue, Request detail, and decisions recorded from your own agent."
+    }
+  ]
+}
