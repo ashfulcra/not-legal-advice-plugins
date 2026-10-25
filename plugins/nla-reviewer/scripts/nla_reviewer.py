@@ -67,7 +67,7 @@ DECISION_LABELS = {
 }
 TIER1_APPROVE_LABEL = "Approve and release"
 SHA_REQUIRED = {"approve", "send_back", "sign"}
-NOTE_REQUIRED = {"send_back", "resolve_blocked"}
+NOTE_REQUIRED = {"send_back", "resolve_blocked", "withdraw"}
 TERMINAL = {"released", "withdrawn"}
 NOTE_MAX = 4000
 CLIENT_MESSAGE_MAX = 2000
@@ -482,7 +482,8 @@ def normalize_review(r: dict) -> dict:
 
 
 QUEUE_GROUPS = [("initial_review", "Initial review"), ("blocked", "Blocked"), ("withdraw_requested", "Withdraw requested"),
-                ("signing", "Signing"), ("fyi", "FYI"), ("other", "No action needed")]
+                ("signing", "Signing"), ("fyi", "FYI"), ("decided", "Decided, waiting for NLA"),
+                ("other", "No action needed")]
 
 
 def queue_group_for(record: dict, user_id: str) -> str | None:
@@ -525,6 +526,7 @@ def build_queue(raw_records: list[dict], user_id: str) -> dict[str, list[dict]]:
             "service": rec["service"], "tier": rec["tier"], "status": rec["status"], "revision": rec["revision"],
             "roles": roles_for(rec, user_id), "withdraw_requested": rec["withdraw_requested"],
             "has_fyi": bool(rec["fyi"]), "fyi": rec["fyi"], "last_change": rec["start_time"],
+            "decided": None,  # the web app fills this from the viewer's own pending action; the CLI has its own pending check
             "allowed": sorted({a["decision"] for a in actions_for(rec, user_id)}),
         })
     for lst in groups.values():
