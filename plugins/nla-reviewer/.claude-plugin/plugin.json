@@ -1,7 +1,7 @@
 {
   "name": "nla-reviewer",
-  "version": "0.2.0",
-  "description": "Reviewer toolkit for Not Legal Advice (simulated law firm on Fulcra): queue, show a Request, and record Initial Reviewer or Signing Attorney decisions from your own agent and Fulcra login. SIMULATED. NOT LEGAL ADVICE.",
+  "version": "0.3.0",
+  "description": "Reviewer toolkit for Not Legal Advice (simulated law firm on Fulcra): queue, show a Request, annotate its documents and draft, and record Initial Reviewer or Signing Attorney decisions from your own agent and Fulcra login. SIMULATED. NOT LEGAL ADVICE.",
   "author": {
     "name": "Not Legal Advice"
   },

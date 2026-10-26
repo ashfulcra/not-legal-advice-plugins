@@ -1,6 +1,6 @@
 ---
 name: nla-reviewer
-description: Work as a Not Legal Advice (NLA) Initial Reviewer or Signing Attorney from your own agent and Fulcra login. Use to set up reviewer actions, list the review queue, read a Request's draft and findings, and record a decision (approve, send_back, sign, resolve_blocked, ask_client, withdraw) for the human. Handles every Service and both review tiers.
+description: Work as a Not Legal Advice (NLA) Initial Reviewer or Signing Attorney from your own agent and Fulcra login. Use to set up reviewer actions, list the review queue, read a Request's draft and findings, annotate passages of its documents or draft, and record a decision (approve, send_back, sign, resolve_blocked, ask_client, withdraw) for the human. Handles every Service and both review tiers.
 ---
 
 # NLA reviewer
@@ -8,7 +8,8 @@ description: Work as a Not Legal Advice (NLA) Initial Reviewer or Signing Attorn
 Not Legal Advice (NLA) is a SIMULATED law firm. Everything here is **SIMULATED. NOT LEGAL ADVICE. DO NOT RELY ON THIS.**
 You help one human reviewer (an Initial Reviewer or a Signing Attorney) read Requests and record their decisions in
 their own Fulcra account, exactly as the NLA web app does (`/review`). Records are written only to the reviewer's own
-`nla review actions` type, shared read-only to NLA; NLA's listener applies them about every 2 minutes.
+`nla review actions` and `nla review annotations` types, shared read-only to NLA; NLA's listener applies decisions
+about every 2 minutes and reads annotations when a Request is sent back.
 
 ## Review tiers
 
@@ -36,8 +37,9 @@ exact CLI command and record JSON and runs nothing.
 ```
 nla_reviewer.py setup --name "Ash (Initial Reviewer)" [--dry-run]
 ```
-Creates the `nla review actions` type (the same schema the web app creates) and shares it to NLA as
-`nla-review-actions: <name>`. Idempotent. You also need NLA to have shared `nla-review: <client>` to you (the firm
+Creates the `nla review actions` and `nla review annotations` types (the same schemas the web app creates) and shares
+them to NLA as `nla-review-actions: <name>` and `nla-review-annotations: <name>`. Idempotent: an existing share is kept,
+and a reviewer set up before annotations existed gets only the annotations type, under the same name. You also need NLA to have shared `nla-review: <client>` to you (the firm
 administrator does this); `setup` reports whether it exists.
 
 ## 2. Queue
@@ -47,7 +49,10 @@ nla_reviewer.py queue [--all] [--json]
 ```
 Latest review record per Request (highest `seq`) from every `nla-review:` share, filtered to Requests where you are the
 Initial Reviewer or Signing Attorney. Groups: Initial review, Blocked (also Waiting on the Client), Withdraw requested,
-Signing, FYI, and with `--all` No action needed.
+Signing, FYI, and with `--all` No action needed. Below them, **Team (read only)** lists the open Requests of a Client
+whose team you are on that are held by another reviewer ("Assigned to another reviewer. Read only.") or by nobody yet
+("Not assigned yet. Read only."). You can `show` them; `act` and `annotate` are refused there. `act` reads the review
+record again right before writing and refuses if the Request was reassigned meanwhile; nothing is written then.
 
 ## 3. Show a Request
 
@@ -62,7 +67,8 @@ detail, plus counts of verified, quote not found, unreachable, domain not allowe
 (each Service has its own fields: for example `dpa_clause` and `requirement`, `clause_ref` and `client_position`, or
 `term_ref` and `requirement`; all show with severity and proposed redline), steps, history (including refusals, shown as `refused: ...`),
 the FYI note (a Signing Attorney send-back, shown to the Initial Reviewer), the Client's `withdraw_requested` flag, and the
-full draft between BEGIN/END markers. Summarise for the human by severity and what needs a decision.
+full draft between BEGIN/END markers, and your open annotations (how many go to the worker with a send-back of this
+revision). Summarise for the human by severity and what needs a decision.
 
 ## 4. Act
 
@@ -83,6 +89,23 @@ rules as the web app (assigned role, allowed status, stale revision or draft, no
 success it prints "decision received, pending": run `show` again after a couple of minutes. A refusal by the listener
 appears in the history as `refused: <why>` (for example stale revision); then re-read the Request and decide again.
 Notes are at most 4,000 characters, client messages 2,000. A Signing Attorney send-back sends an FYI to the Initial Reviewer.
+
+## 5. Annotate (comment, issue, redline)
+
+```
+nla_reviewer.py annotate R-0012 --target doc:1|draft --quote "..." --kind comment|issue|redline --body "..." [--replacement "..."] [--dry-run]
+nla_reviewer.py annotations R-0012 [--json]
+nla_reviewer.py resolve R-0012 <annotation_id> [--dry-run]
+nla_reviewer.py delete R-0012 <annotation_id> [--yes] [--dry-run]
+```
+`doc:<k>` is the kth document in `show` (its text as the worker saw it, which NLA shares to you); `draft` is the draft
+Markdown. The quote must be copied from that text (case, spacing and punctuation are ignored, the words are not); the
+script downloads the text, refuses a quote it cannot find, and stores up to 64 characters around it so the passage can be
+found again. `comment` and `issue` need `--body`; `redline` needs `--replacement`. Limits as in the web app: quote 1,000,
+body and replacement 4,000. Records are append-only: `resolve` and `delete` write a new record that supersedes the old
+one, and `annotations` lists the latest per annotation_id. `delete` asks at the terminal; pass `--yes` only after the human
+confirmed. Annotate only what the human asked for, in their words. NLA reads open annotations on the current revision
+only when it is sent back (`act ... send_back`); the worker addresses each one in its `revision_response` step.
 
 ## Citations
 
