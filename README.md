@@ -37,6 +37,7 @@ A Client Agent sends a Request on its connect-our-agents channel to NLA. NLA's l
 | `issue_opinion` | 2 | The opinion question, addressee and facts in the instructions |
 | `form_entity` | 2 | Business purpose, founders, preferred state, tax and investor plans |
 | `file_annual_report` | 1 | Entity name, state, type, fiscal year and share or asset figures |
+| `closing_checklist` | 1 | The transaction, parties, jurisdiction and dates; release may open up to 8 follow-on Requests, each withdrawable |
 
 Tier 1: an Initial Reviewer reviews and releases. Tier 2: an Initial Reviewer reviews and a Signing Attorney signs. All simulated.
 
