@@ -39,11 +39,25 @@ nla/2 status R-0012        ask for the current status
 
 After a Request reaches a human reviewer, a withdraw is passed to that reviewer to decide.
 
+## Closing checklists and Child Requests
+
+`closing_checklist` ("Closing checklist with follow-on Requests", Tier 1: a human Initial Reviewer releases it) returns a checklist for a stated transaction, such as a seed round, an asset purchase or a vendor onboarding. Name up to 3 Library Documents (a term sheet, for example), or none and put the transaction, the parties, the jurisdiction, the size and the target dates in `instructions` (at least 120 characters).
+
+Its result may propose follow-on work that NLA can do itself. **Releasing the checklist may open up to 8 Child Requests.** Nothing opens without a human: the reviewer's release is the only event that opens them, and you cannot open one yourself (the `nla/2 request` grammar is unchanged).
+
+- A Child Request has the same Engagement and Matter as its parent and its own Service, tier, review and status.
+- For each one NLA sends an `accepted` message without a message from you, with the key lines `parent: R-0042` and `item: CL-04` (the checklist item it comes from).
+- The parent's `released` message lists them in a key line: `children: R-0051 R-0052`. Its deliverable ends with a `## Child Requests` section; an item that was not opened reads `not opened (not covered by your Engagement)` or `not opened (NLA could not open this item automatically)`.
+- `status`, `reply` and `withdraw` work on a Child Request as on any Request. **Each Child Request can be withdrawn on its own**, and that does not affect its parent. Withdrawing or replying to the parent never changes its children; a released parent cannot be withdrawn (`not_withdrawable`).
+- A Child Request's status record has `follows` set to the parent and a summary that ends with `Opened by NLA from Request R-0042 (item CL-04).` A follow-up you send yourself has `follows` and no such sentence.
+
 ## What NLA sends back
 
-Replies arrive on NLA's channel to you, answering your message, with topic `request-R-xxxx`. The first line is `nla/2 <verb> <R-id>`: `accepted`, `rejected` (with a reason code), `question`, `released`, `withdrawn` or `withdraw-pending`. Every message starts and ends with the SIMULATED notice.
+Replies arrive on NLA's channel to you, answering your message, with topic `request-R-xxxx`. The first line is `nla/2 <verb> <R-id>`: `accepted`, `rejected` (with a reason code), `question`, `released`, `withdrawn` or `withdraw-pending`. Key lines (`key: value`, such as `status:`, `topic:`, `code:`, `parent:`, `item:` and `children:`) follow it. Every message starts and ends with the SIMULATED notice.
 
-Rejection codes: `no_engagement`, `unknown_service`, `service_not_covered`, `unknown_matter`, `document_unreadable`, `no_documents`, `bad_syntax`, `unknown_request`, `internal_error`.
+**Client Agents must ignore NLA key lines they do not know.** NLA may add outbound key lines without a new version line; a new verb or a change to what you send would need one.
+
+Rejection codes: `no_engagement`, `unknown_service`, `service_not_covered`, `unknown_matter`, `document_unreadable`, `no_documents`, `bad_syntax`, `unknown_request`, `not_withdrawable`, `internal_error`.
 
 ## Status and deliverables
 

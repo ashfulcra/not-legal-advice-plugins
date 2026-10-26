@@ -456,6 +456,7 @@ SERVICE_TITLES = {
     "issue_opinion": "Simulated legal opinion letter",
     "form_entity": "Entity formation package (simulated)",
     "file_annual_report": "Annual report and franchise tax worksheet (simulated)",
+    "closing_checklist": "Closing checklist with follow-on Requests",
 }
 
 
@@ -501,6 +502,96 @@ def extras_view(extras) -> dict:
     view["empty"] = not (view["recommendation"] or conditions or view["position_summary"] or view["short_answer"]
                          or view["confidence"] or view["opinion_summary"] or view["citations"]["rows"] or other)
     return view
+
+
+# ---------------------------------------------------------------- Child Requests (Stage 4: parent and child Requests)
+
+# A Service that spawns children (closing_checklist today) proposes them in `result_extra_json.children`; at ingest NLA
+# adds `children_plan` beside it: one entry per proposal with its disposition (open, not_covered, invalid and why) and,
+# once the parent is released, the R-id of each opened child. Releasing the parent (Tier 1 `approve`, or `sign`) is the
+# only event that opens them.
+CHILDREN_KEY = "children"
+CHILDREN_PLAN_KEY = "children_plan"
+CHILDREN_KEYS = (CHILDREN_KEY, CHILDREN_PLAN_KEY)
+MAX_CHILDREN = 8
+DISPOSITION_LABELS = {"open": "will open", "not_covered": "not covered by the Engagement", "invalid": "invalid"}
+INVALID_DETAILS = {
+    "unknown_service": "the Service does not exist",
+    "nested": "that Service opens Child Requests itself",
+    "document_not_in_parent": "a document this Request does not name",
+    "documents_count": "the document count is outside that Service's limits",
+    "instructions_too_short": "no document and the instructions are shorter than that Service's minimum",
+    "instructions_too_long": "the instructions are over 3,000 characters",
+    "not_open_at_review": "it was not listed as opening when the draft was reviewed",
+}
+# The same regex as NLA's listener (nla/children.py): a Child Request's first history entry (reason `spawned`).
+ORIGIN_RE = re.compile(r"Opened by NLA from Request (R-\d{4,}) \(item ([A-Z]{1,4}-\d{2,3})\)\.")
+SPAWNED = "spawned"
+
+
+def spawns_children(extras) -> bool:
+    e = extras if isinstance(extras, dict) else {}
+    return any(k in e for k in CHILDREN_KEYS)
+
+
+def children_view(extras) -> list[dict]:
+    """The proposed Child Requests of a parent: the plan NLA stored at ingest (with dispositions and, after release,
+    R-ids), joined to the worker's proposals by item for any instructions or documents the plan lacks. Without a plan
+    the proposals show as "not checked yet". Every field is untrusted model output."""
+    e = extras if isinstance(extras, dict) else {}
+    proposals = {}
+    for c in list_of(e.get(CHILDREN_KEY)):
+        if isinstance(c, dict) and text_of(c.get("item_id")) not in proposals:
+            proposals[text_of(c.get("item_id"))] = c
+    plan_raw = parse_json_field(e.get(CHILDREN_PLAN_KEY), None)
+    checked = isinstance(plan_raw, list)
+    source = [p for p in plan_raw if isinstance(p, dict)] if checked else list(proposals.values())
+    rows = []
+    for p in source:
+        item = text_of(p.get("item_id"))
+        prop = proposals.get(item, {})
+        service = text_of(p.get("service") or prop.get("service"))
+        disposition = lc(p.get("disposition")) if checked else ""
+        detail = text_of(p.get("detail")) if checked else ""
+        rid = text_of(p.get("request_id")) if checked else ""
+        if disposition == "open" and rid:
+            label = f"opened as {rid}"
+        elif disposition == "invalid":
+            label = f"invalid: {INVALID_DETAILS.get(detail, detail or 'no reason given')}"
+        else:
+            label = DISPOSITION_LABELS.get(disposition, "not checked yet")
+        docs = p.get("documents") if "documents" in p else prop.get("documents")
+        rows.append({"item_id": item, "service": service, "service_title": service_title(service),
+                     "disposition": disposition, "detail": detail, "request_id": rid, "label": label,
+                     "instructions": text_of(p.get("instructions") if "instructions" in p else prop.get("instructions")),
+                     "documents": [text_of(d) for d in list_of(docs) if text_of(d).strip()]})
+    return rows
+
+
+def children_to_open(rows: list[dict]) -> list[dict]:
+    """The proposals the release opens: disposition `open` and no R-id yet."""
+    return [r for r in rows if r["disposition"] == "open" and not r["request_id"]]
+
+
+def releases(record: dict, decision: str) -> bool:
+    """True when this decision releases the Request to the Client: `approve` on Tier 1, `sign` on Tier 2."""
+    return decision == "sign" or (decision == "approve" and tier_of(record) == 1)
+
+
+def release_label(record: dict, decision: str, n: int) -> str:
+    """The label of a releasing decision that opens n Child Requests (the web app says the same on its button)."""
+    verb = "Approve" if decision == "approve" else "Sign"
+    return f"{verb}, release and open {n} child Request{'' if n == 1 else 's'}"
+
+
+def child_origin(record: dict) -> dict | None:
+    """{parent, item} of a Child Request, from its first history entry (reason `spawned`, the origin sentence)."""
+    for h in record.get("history") or []:
+        if h.get("reason") == SPAWNED:
+            m = ORIGIN_RE.search(h.get("note") or "")
+            if m:
+                return {"parent": m.group(1), "item": m.group(2)}
+    return None
 
 
 def normalize_review(r: dict) -> dict:
@@ -1444,6 +1535,25 @@ def print_citations(cites: dict, rec: dict) -> None:
             print(f"    detail: {printable(c['detail'])}")
 
 
+def print_children(kids: list[dict], rec: dict) -> None:
+    """The proposed Child Requests, in full: a reviewer approves each child's instructions by releasing the parent, so
+    every proposal is shown with its item, Service, documents and complete instructions (untrusted model output)."""
+    n_open = len(children_to_open(kids))
+    print(f"\n## Proposed Child Requests ({len(kids)})")
+    if not kids:
+        print("(none proposed)")
+        return
+    if n_open:
+        print(f"Releasing {rec['request_id']} opens {n_open} Child Request{'' if n_open == 1 else 's'} (at most "
+              f"{MAX_CHILDREN}), each with its own tier and review, in the same Matter. To drop one, send back with a "
+              "note naming it; there is no deselection at approve.")
+    for k in kids:
+        print(f"- {printable(k['item_id'])} {printable(k['service'])} ({printable(k['service_title'])}): "
+              f"{printable(k['label'])}")
+        print(f"    documents: {', '.join(printable(d) for d in k['documents']) or '(none)'}")
+        print(f"    instructions: {printable(k['instructions']) or '(none)'}")
+
+
 def cmd_show(args, cli: Cli) -> int:
     ctx = Context(cli, args.user_id)
     rec = find_record(ctx, args.request_id, allow_team=True)
@@ -1456,8 +1566,11 @@ def cmd_show(args, cli: Cli) -> int:
         current, ann_error = [], str(exc)
     open_annotations = [a for a in current if a["status"] == "open"]
     if args.json:
+        kids = children_view(rec["extras"]) if spawns_children(rec["extras"]) else None
         print(json.dumps({"notice": NOTICE, "request": rec, "roles": roles_for(rec, uid), "allowed": allowed,
-                          "annotations": {"set_up": bool(ann_share), "error": ann_error, "open": open_annotations}}, indent=1))
+                          "annotations": {"set_up": bool(ann_share), "error": ann_error, "open": open_annotations},
+                          "children": kids, "release_opens": len(children_to_open(kids or [])),
+                          "parent": child_origin(rec)}, indent=1))
         return 0
     tier = rec["tier"]
     print(NOTICE)
@@ -1471,9 +1584,20 @@ def cmd_show(args, cli: Cli) -> int:
         print(f"{read_only_label(rec)} You can read it because you are on its Client's team; decisions and annotations "
               "are refused.")
     print(f"draft_sha256: {rec['draft_sha256'] or '(none)'}")
-    print("you can: " + (", ".join(f"{a['decision']} (as {a['role']})" + (f" [{decision_label('approve', 1)}]" if a["decision"] == "approve" and tier == 1 else "")
-                         for a in allowed)
+    kids = children_view(rec["extras"]) if spawns_children(rec["extras"]) else []
+    n_open = len(children_to_open(kids))
+
+    def label(a):
+        if n_open and releases(rec, a["decision"]):
+            return f" [{release_label(rec, a['decision'], n_open)}]"
+        return f" [{decision_label('approve', 1)}]" if a["decision"] == "approve" and tier == 1 else ""
+
+    print("you can: " + (", ".join(f"{a['decision']} (as {a['role']})" + label(a) for a in allowed)
                          or "nothing right now"))
+    origin = child_origin(rec)
+    if origin:
+        print(f"Child Request: opened by NLA from {origin['parent']} (item {origin['item']}) when {origin['parent']} "
+              "was released. It is reviewed and released on its own.")
     if rec["withdraw_requested"]:
         print("WITHDRAW REQUESTED: the Client asked to withdraw this Request.")
     if rec["status"] == "blocked":
@@ -1485,7 +1609,7 @@ def cmd_show(args, cli: Cli) -> int:
     print("\n## Documents")
     for d in rec["documents"]:
         print(f"- {d['path']}  sha256 {d['sha256']}")
-    extras = extras_view(rec["extras"])
+    extras = extras_view({k: v for k, v in rec["extras"].items() if k not in CHILDREN_KEYS})
     if not extras["empty"]:
         print("\n## Result summary")
         if extras["recommendation"]:
@@ -1503,6 +1627,8 @@ def cmd_show(args, cli: Cli) -> int:
         for o in extras["other"]:
             print(f"{o['label']}: {o['value']}")
         print_citations(extras["citations"], rec)
+    if spawns_children(rec["extras"]):
+        print_children(kids, rec)
     print("\n## Findings")
     columns = finding_columns(rec["findings"])
     for f in rec["findings"]:
@@ -1555,13 +1681,42 @@ def cmd_act(args, cli: Cli) -> int:
         raise ActionRefused("not_assigned", not_pinned_message(rec))
     inp = {"decision": decision, "revision": rec["revision"], "draft_sha256": rec["draft_sha256"], "note": note,
            "client_message": args.client_message or ""}
+    opening = []
+    if releases(rec, decision) and spawns_children(rec["extras"]):
+        verdict = validate_action(rec, ctx.user_id(), inp)
+        if not verdict["ok"]:
+            raise ActionRefused(verdict["code"], verdict["message"])
+        opening = children_to_open(children_view(rec["extras"]))
+        print(release_question(rec, opening))
+        if opening and not args.yes and not cli.dry_run and not confirm_release(
+                f"Release {rec['request_id']} and open {len(opening)} Child Request{'' if len(opening) == 1 else 's'}?"):
+            print("Cancelled. Nothing was written.")
+            return 1
     result = submit_action(cli, ctx, rec, inp, force=args.force)
     if not cli.dry_run:
-        releases = " This Tier 1 approval releases the deliverable to the Client." if decision == "approve" and rec["tier"] == 1 else ""
+        released = " This Tier 1 approval releases the deliverable to the Client." if decision == "approve" and rec["tier"] == 1 else ""
+        if opening:
+            released += (f" The release opens {len(opening)} Child Request{'' if len(opening) == 1 else 's'}; "
+                         "their R-ids appear in `show` once NLA has applied it.")
         print(f"Recorded {decision} for {rec['request_id']} revision {rec['revision']} as {result['role']} "
-              f"(action {result['action']['action_id']}).{releases} Decision received, pending: NLA's listener applies it "
+              f"(action {result['action']['action_id']}).{released} Decision received, pending: NLA's listener applies it "
               "on its next poll (about 2 minutes). Run `show` again to see the outcome or a refusal in the history.")
     return 0
+
+
+def release_question(rec: dict, opening: list[dict]) -> str:
+    """What a releasing decision on a spawning Service will open, listed in full before the human confirms."""
+    n = len(opening)
+    if not n:
+        return f"This release of {rec['request_id']} opens no Child Requests (no proposal will open)."
+    lines = [f"This release opens {n} child Request{'' if n == 1 else 's'} from {rec['request_id']}, in its Matter. "
+             "Each runs and is reviewed on its own. To drop one, send back instead. NLA rechecks the Engagement at "
+             "release, so an item it no longer covers is not opened."]
+    for k in opening:
+        lines.append(f"- {printable(k['item_id'])} {printable(k['service'])} ({printable(k['service_title'])})")
+        lines.append(f"    documents: {', '.join(printable(d) for d in k['documents']) or '(none)'}")
+        lines.append(f"    instructions: {printable(k['instructions']) or '(none)'}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- annotations
@@ -1698,12 +1853,21 @@ def cmd_resolve(args, cli: Cli) -> int:
     return 0
 
 
-def confirm(question: str) -> bool:
-    """Ask the human at the terminal. Tests replace this function."""
+def ask_terminal(question: str, verb: str) -> bool:
     if not sys.stdin.isatty():
-        raise ReviewerError("delete needs a confirmation and there is no terminal to ask on. Ask the human, then re-run "
+        raise ReviewerError(f"{verb} needs a confirmation and there is no terminal to ask on. Ask the human, then re-run "
                             "with --yes.")
-    return input(f"{question} Type yes to delete: ").strip().lower() in ("y", "yes")
+    return input(f"{question} Type yes to {verb}: ").strip().lower() in ("y", "yes")
+
+
+def confirm(question: str) -> bool:
+    """Ask the human at the terminal before a delete. Tests replace this function."""
+    return ask_terminal(question, "delete")
+
+
+def confirm_release(question: str) -> bool:
+    """Ask the human at the terminal before a release that opens Child Requests. Tests replace this function."""
+    return ask_terminal(question, "release")
 
 
 def cmd_delete(args, cli: Cli) -> int:
@@ -1801,6 +1965,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--human-approved", action="store_true",
                     help="required for approve and sign: the human told you to do this for this Request")
     sp.add_argument("--force", action="store_true", help="skip the already-pending check")
+    sp.add_argument("--yes", action="store_true",
+                    help="skip the confirmation of a release that opens Child Requests (only after the human confirmed)")
     sp = add("annotate", cmd_annotate, "annotate a passage of a Library Document or the draft (comment, issue, redline)", True)
     sp.add_argument("request_id")
     sp.add_argument("--target", required=True, help="doc:<k> for the kth Library Document, or draft")

@@ -44,13 +44,15 @@ EVENT_ID_RE = re.compile(r"^event/[0-9a-f-]{36}$", re.I)
 # `--service` accepts any registered name; this table only lets the script check the obvious mistakes early.
 # A Service not listed here is checked the generic way: a document, or at least 50 characters of instructions.
 KNOWN_SERVICES = {"review_dpa": 1, "review_clause": 0, "approve_vendor_terms": 1, "answer_regulatory_question": 0,
-                  "issue_opinion": 0, "form_entity": 0, "file_annual_report": 0}
+                  "issue_opinion": 0, "form_entity": 0, "file_annual_report": 0, "closing_checklist": 0}
 INSTRUCTIONS_MIN_WITHOUT_DOCS = 50
 # Per-Service instructions minimum when no --doc is given (instructions_min_chars_without_documents in service.json).
 INSTRUCTIONS_MIN_BY_SERVICE = {"review_clause": 50, "answer_regulatory_question": 80, "issue_opinion": 150,
-                               "form_entity": 150, "file_annual_report": 80}
+                               "form_entity": 150, "file_annual_report": 80, "closing_checklist": 120}
 # Services whose instructions carry a question, not a clause or document text.
 RESEARCH_SERVICES = {"answer_regulatory_question", "issue_opinion", "form_entity", "file_annual_report"}
+# Services whose instructions describe a transaction (skills/closing_checklist/service.json).
+TRANSACTION_SERVICES = {"closing_checklist"}
 SERVICE_HELP = ("any registered Service name; today: review_dpa (DPA review, needs a document), review_clause "
                 "(one clause; a document or the clause text in --instructions, at least 50 characters), "
                 "approve_vendor_terms (vendor terms approval, needs a document), "
@@ -58,7 +60,10 @@ SERVICE_HELP = ("any registered Service name; today: review_dpa (DPA review, nee
                 "question, jurisdiction and facts, at least 80 characters), "
                 "issue_opinion (a simulated opinion letter; no document needed, --instructions with the question, addressee "
                 "and facts, at least 150 characters), form_entity (simulated formation package, at least 150 characters), "
-                "file_annual_report (simulated annual report and franchise tax worksheet, at least 80 characters)")
+                "file_annual_report (simulated annual report and franchise tax worksheet, at least 80 characters), "
+                "closing_checklist (Tier 1 closing checklist with follow-on Requests; up to 3 documents such as a term "
+                "sheet, or --instructions with the transaction, parties, jurisdiction, size and target dates, at least "
+                "120 characters; its release may open up to 8 Child Requests)")
 RECOMMENDATIONS = {"approve": "Approve", "approve_with_conditions": "Approve with conditions", "reject": "Reject"}
 RECOMMENDATION_BANNER = re.compile(r"RECOMMENDATION:?\s*\**\s*(APPROVE[ _]WITH[ _]CONDITIONS|APPROVE|REJECT)(?![A-Za-z_])", re.I)
 CONDITIONS_HEADING = re.compile(r"^\W*Conditions\b.*:\W*$", re.I)
@@ -356,7 +361,9 @@ def check_request_inputs(service: str, docs: list[str], instructions: str) -> No
     n = len((instructions or "").strip())
     minimum = INSTRUCTIONS_MIN_BY_SERVICE.get(service, INSTRUCTIONS_MIN_WITHOUT_DOCS)
     if n < minimum:
-        what = ("the question, the jurisdiction and the facts" if service in RESEARCH_SERVICES else "the text to review")
+        what = ("the question, the jurisdiction and the facts" if service in RESEARCH_SERVICES
+                else "the transaction, the parties, the jurisdiction, the size and the target dates"
+                if service in TRANSACTION_SERVICES else "the text to review")
         raise ClientError(f"with no --doc, put {what} in --instructions: at least {minimum} "
                           f"characters (you gave {n}). Or add a --doc (a path under {LIBRARY_DIR}).")
 
@@ -528,6 +535,116 @@ def citation_line(counts: dict) -> str:
     return line
 
 
+# ---------------------------------------------------------------- Child Requests (parent and child Requests)
+
+# One fixed form, the same regex as NLA's listener (nla/children.py) and the web app (nla-rules.js). A Child Request's
+# status summary ends with this sentence and its `follows` names the parent; a Client follow-up has `follows` only.
+ORIGIN_RE = re.compile(r"Opened by NLA from Request (R-\d{4,}) \(item ([A-Z]{1,4}-\d{2,3})\)\.")
+CHILDREN_HEADING = re.compile(r"^#{1,6}\s*Child Requests\s*$", re.I)
+CHILD_LINE = re.compile(r"^\s*[-*]\s+([A-Z]{1,4}-\d{2,3})\s+([a-z][a-z0-9_]*):\s+"
+                        r"(?:opened as (R-\d{4,})|not opened \((.+)\))\s*$")
+
+
+def origin_sentence(parent: str, item: str) -> str:
+    return f"Opened by NLA from Request {parent} (item {item})."
+
+
+def origin_of(recs: list[dict]) -> tuple[str, str] | None:
+    """(parent, item) of a Child Request: the origin sentence in a status summary, with `follows` naming that same
+    parent. None for every other Request, a Client follow-up included."""
+    for r in reversed(recs):
+        m = ORIGIN_RE.search(str(r.get("summary") or ""))
+        if m and str(r.get("follows") or "").strip() == m.group(1):
+            return m.group(1), m.group(2)
+    return None
+
+
+def children_section(deliverable_md: str = "") -> list[dict] | None:
+    """The items of the deliverable's `## Child Requests` section (written by NLA at the release of a parent):
+    [{item, service, request_id, reason}], `request_id` set for an opened item and `reason` for one not opened.
+    None when the deliverable has no such section."""
+    lines = str(deliverable_md or "").split("\n")
+    at = next((i for i, ln in enumerate(lines) if CHILDREN_HEADING.match(ln.strip())), -1)
+    if at < 0:
+        return None
+    items = []
+    for line in lines[at + 1:]:
+        if line.startswith("#"):
+            break
+        m = CHILD_LINE.match(line)
+        if m:
+            items.append({"item": m.group(1), "service": m.group(2), "request_id": m.group(3) or "",
+                          "reason": m.group(4) or ""})
+    return items
+
+
+def rollup(children: list[dict]) -> dict:
+    """{total, released, withdrawn} over a parent's opened Child Requests, from the children's own status."""
+    return {"total": len(children),
+            "released": sum(1 for c in children if c.get("external_status") == "Released"),
+            "withdrawn": sum(1 for c in children if c.get("external_status") == "Withdrawn")}
+
+
+def rollup_words(r: dict) -> str:
+    return f"{r['released']} of {r['total']} released, {r['withdrawn']} withdrawn"
+
+
+def family(groups: dict[str, list[dict]]) -> dict[str, dict]:
+    """Per Request: its parent and item (a Child Request), and for a parent its opened children with their current
+    external status, the roll-up and the items NLA did not open. Children come from two places, so that a child whose
+    first status is not readable yet still shows: the parent's `## Child Requests` section and every Request whose
+    origin sentence names the parent."""
+    origin = {rid: origin_of(recs) for rid, recs in groups.items()}
+    out: dict[str, dict] = {rid: {"parent": o[0] if o else "", "item": o[1] if o else ""} for rid, o in origin.items()}
+    for rid, recs in groups.items():
+        withdoc = next((r for r in reversed(recs) if r.get("deliverable_md")), None)
+        listed = children_section(withdoc.get("deliverable_md", "")) if withdoc else None
+        kids: dict[str, dict] = {}
+        for it in listed or []:
+            if it["request_id"]:
+                kids[it["request_id"]] = {"request_id": it["request_id"], "item": it["item"], "service": it["service"]}
+        for cid, o in origin.items():
+            if o and o[0] == rid and cid not in kids:
+                kids[cid] = {"request_id": cid, "item": o[1], "service": groups[cid][-1].get("service", "")}
+        if listed is None and not kids:
+            continue
+        for cid, k in kids.items():
+            latest = groups[cid][-1] if cid in groups else {}
+            k["external_status"] = latest.get("external_status", "")
+            k["last_change"] = latest.get("start_time") or latest.get("at") or ""
+            k["has_deliverable"] = (latest.get("external_status") == "Released"
+                                    and any(r.get("deliverable_md") for r in groups.get(cid, [])))
+        children = sorted(kids.values(), key=lambda k: (k["item"], k["request_id"]))
+        out[rid].update({"children": children, "rollup": rollup(children),
+                         "not_opened": [{"item": it["item"], "service": it["service"], "reason": it["reason"]}
+                                        for it in listed or [] if not it["request_id"]]})
+    return out
+
+
+def child_status_line(k: dict) -> str:
+    status = k["external_status"] or "no status yet"
+    line = f"{k['request_id']}  {status:<14} {k['item']} {k['service']}"
+    if k.get("has_deliverable"):
+        line += f"  (deliverable {k['request_id']})"
+    return line
+
+
+def family_lines(fam: dict) -> list[str]:
+    """What `status` and `deliverable` print about a Request's parent or children (data from NLA's records)."""
+    lines = []
+    if fam.get("parent"):
+        lines.append(f"Child Request: {origin_sentence(fam['parent'], fam['item'])} It is reviewed and released on its "
+                     f"own; withdrawing it does not affect {fam['parent']}.")
+    if "children" in fam:
+        if fam["children"]:
+            lines.append(f"Child Requests: {rollup_words(fam['rollup'])}")
+        else:
+            lines.append("Child Requests: none opened")
+        lines += [f"  {child_status_line(k)}" for k in fam["children"]]
+        lines += [f"  {n['item']} {n['service']}: not opened ({n['reason']})" for n in fam["not_opened"]]
+    return lines
+
+
 def recommendation_of(recs: list[dict]) -> dict | None:
     """Only a Released approve_vendor_terms Request carries one."""
     latest = recs[-1]
@@ -673,12 +790,13 @@ def cmd_status(args, cli: Cli) -> int:
             print(f"Asked NLA for the status of {rid}. Run `inbox` for its answer.")
         return 0
     groups = status_records(cli, ctx, args.days)
+    fams = family(groups)  # from every Request, so one Request's view still finds its parent or children
     if args.request_id:
         rid = check_request_id(args.request_id)
         if rid not in groups:
             raise ClientError(f"no status records for {rid} yet")
         groups = {rid: groups[rid]}
-    rows = [summarise(rid, recs) for rid, recs in groups.items()]
+    rows = [dict(summarise(rid, recs), **fams[rid]) for rid, recs in groups.items()]
     rows.sort(key=lambda r: r["last_change"], reverse=True)
     if args.json:
         print(json.dumps({"notice": NOTICE, "requests": rows,
@@ -688,16 +806,22 @@ def cmd_status(args, cli: Cli) -> int:
         return 0
     print(banner())
     print()
+    listed = {r["request_id"] for r in rows}
+    nested = {k["request_id"] for r in rows for k in r.get("children", [])} if not args.request_id else set()
     for row in rows:
+        if row["request_id"] in nested and row["parent"] in listed:
+            continue  # listed under its parent
         print(f"{row['request_id']}  {row['external_status']:<14} {row['matter_name']} / {row['service']}"
               f"  last change {row['last_change']}")
-        if row["follows"]:
+        if row["follows"] and not row["parent"]:
             print(f"    follows {row['follows']}")
         if args.request_id:
             for r in groups[row["request_id"]]:
                 print(f"    {r.get('start_time') or r.get('at') or '?'}  {r.get('external_status')}: {r.get('summary', '')}")
         elif row["summary"]:
             print(f"    {row['summary']}")
+        for line in family_lines(row):
+            print(f"    {line}")
         if row["recommendation"]:
             for line in recommendation_lines(row["recommendation"], bool(args.request_id)):
                 print(f"    {line}")
@@ -730,6 +854,8 @@ def cmd_deliverable(args, cli: Cli) -> int:
     counts = citation_counts(rec["deliverable_md"])
     if counts:
         print(citation_line(counts), file=sys.stderr)
+    for line in family_lines(family(groups)[rid]):
+        print(line, file=sys.stderr)
     if args.out:
         out = Path(args.out).expanduser()
         out.write_text(text)
@@ -762,7 +888,8 @@ def cmd_inbox(args, cli: Cli) -> int:
             print("No new messages from Not Legal Advice.")
         for d in described:
             label = f"nla/2 {d['verb']} {d['request_id']}" if d["protocol"] else "message (not nla/2)"
-            extra = " ".join(f"{k}={v}" for k, v in d["fields"].items() if k in ("status", "code", "topic"))
+            extra = " ".join(f"{k}={v}" for k, v in d["fields"].items()
+                             if k in ("status", "code", "topic", "parent", "item", "children"))
             print(f"----- {d['at'] or '?'}  {label}  {extra}".rstrip())
             print(d["body"])
             print()

@@ -1,6 +1,6 @@
 ---
 name: nla-client
-description: Act as a Client Agent for Not Legal Advice (NLA), a simulated agent-native law firm on Fulcra. Use when the human wants to connect to NLA, share documents in a Library, send a Request such as a DPA review, clause review, vendor terms approval, a regulatory question or an opinion letter (nla/2 request review_dpa, review_clause, approve_vendor_terms, answer_regulatory_question, issue_opinion), check status, answer an NLA question, withdraw, or fetch a released deliverable.
+description: Act as a Client Agent for Not Legal Advice (NLA), a simulated agent-native law firm on Fulcra. Use when the human wants to connect to NLA, share documents in a Library, send a Request such as a DPA review, clause review, vendor terms approval, a regulatory question, an opinion letter or a closing checklist (nla/2 request review_dpa, review_clause, approve_vendor_terms, answer_regulatory_question, issue_opinion, closing_checklist), check status and Child Requests, answer an NLA question, withdraw, or fetch a released deliverable.
 ---
 
 # NLA Client Agent
@@ -55,8 +55,10 @@ nla_client.py request --service review_dpa --doc /nla-library/acme-dpa.pdf \
   regulatory question, no document needed: put the question, the jurisdiction or jurisdictions and the facts in
   `--instructions`, at least 80 characters), `issue_opinion` (Tier 2; a simulated opinion letter, no document needed:
   the opinion question, the addressee, and the facts and assumptions to rely on in `--instructions`, at least 150
-  characters). The two research Services accept up to 3 optional Library Documents for context. A name NLA does not
-  offer is rejected `unknown_service`, and the rejection lists what your Engagement covers.
+  characters), `closing_checklist` ("Closing checklist with follow-on Requests", Tier 1; up to 3 Library Documents such
+  as a term sheet, or no `--doc` and the transaction, parties, jurisdiction, size and target dates in `--instructions`,
+  at least 120 characters; see section 7). The two research Services accept up to 3 optional Library Documents for
+  context. A name NLA does not offer is rejected `unknown_service`, and the rejection lists what your Engagement covers.
 - Body cap 4,000 characters: long instructions belong in a Library document.
 - `--follows R-x` links a follow-up (for example a new version) to an earlier Request; it stays in that Request's Matter.
 - No `--matter` means General Matter.
@@ -69,14 +71,16 @@ every 2 minutes; NLA's listener runs about every 2 minutes. Verbs:
 | NLA says | Meaning | You do |
 |---|---|---|
 | `accepted R-x` | Request received (note the id) | tell the human the id |
+| `accepted R-x` with `parent:` and `item:` | a Child Request NLA opened (section 7); no message from you | tell the human |
 | `rejected` + `code:` | not accepted | explain the code; fix and resend only if the human agrees |
 | `question R-x` | NLA needs an answer (status Waiting on you) | ask the human, then step 6 |
-| `released R-x` | finished; message has a summary only | step 5 for the full deliverable |
+| `released R-x` | finished; message has a summary only (`children:` lists any Child Requests it opened) | step 5 |
 | `status R-x` | answer to your `status` ask | relay |
 | `withdrawn R-x` | withdrawn | relay |
 | `withdraw-pending R-x` | already with a human reviewer; they were asked to withdraw | relay, wait |
 
-Rejection codes: `no_engagement`, `unknown_service`, `service_not_covered`, `unknown_matter`, `document_unreadable`,
+`inbox` shows the key lines `status`, `code`, `topic`, `parent`, `item` and `children`. Ignore any NLA key line you do not
+know. Rejection codes: `no_engagement`, `unknown_service`, `service_not_covered`, `unknown_matter`, `document_unreadable`,
 `no_documents`, `bad_syntax`, `unknown_request`, `not_withdrawable`.
 
 ## 5. Status and the deliverable
@@ -105,6 +109,25 @@ nla_client.py withdraw R-0012                                          # nla/2 w
 ```
 Only the Client that sent a Request can reply, withdraw or ask status for it. Before a human reviewer has the Request,
 withdraw takes effect; afterwards NLA answers `withdraw-pending` and a reviewer decides.
+
+## 7. Closing checklists and Child Requests
+
+A `closing_checklist` Request returns a checklist for a stated transaction (seed round, asset purchase, vendor
+onboarding and similar). Its worker may propose up to 8 **Child Requests** for items NLA can do itself. Nothing opens
+without a human: when a reviewer releases the checklist, NLA opens the approved proposals as Child Requests in the same
+Matter, each with its own Service, tier, review and status. You get an `accepted` message for each (with `parent:` and
+`item:`) without sending anything, and the `released` message names them (`children: R-0051 R-0052`).
+- Each Child Request is an ordinary Request: `status`, `reply` and `withdraw` work on it as on any other. **Each can be
+  withdrawn on its own** (`withdraw R-0051`); that does not affect the checklist, and withdrawing or replying to the
+  checklist never changes its children. The checklist itself cannot be withdrawn once released.
+- `status` nests children under the checklist with a roll-up ("1 of 2 released, 0 withdrawn"); `status R-0051` says
+  "Opened by NLA from Request R-0042 (item CL-04)." A child's status record has `follows` = the checklist; a follow-up
+  you sent yourself has `follows` and no such sentence.
+- The checklist's deliverable ends with a `## Child Requests` section; `deliverable` prints the live roll-up on stderr.
+  Items NLA did not open read `not opened (not covered by your Engagement)` (ask the firm to extend the Engagement, or
+  send that Request yourself later) or `not opened (NLA could not open this item automatically)` (send it yourself
+  with the documents it needs, if the human wants it).
+- You cannot open Child Requests: they come only from a reviewer's release.
 
 ## Telling the human
 
